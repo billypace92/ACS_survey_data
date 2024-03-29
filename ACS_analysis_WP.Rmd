@@ -1,0 +1,596 @@
+---
+title: "ACS Analysis"
+output: html_document
+date: "2024-03-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# ACS Analysis
+
+## Data Loading
+
+first load the dataset and libraries
+
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readr)
+library(RColorBrewer)
+library(corrplot)
+library(confintr)
+library(reshape2)
+library(clustMixType)
+library(Rtsne)
+
+
+```
+
+
+
+```{r}
+
+# Specify the path to the CSV file
+file_path = "F:/pc docs/Project datasets/American Community Survey/acs.csv"
+
+# Read the CSV file into a data frame
+data = read.csv(file_path)
+
+# View the first few rows of the data frame
+head(data)
+
+
+```
+
+
+income: Annual income.
+employment: Employment status.
+hrs_work: Hours worked per week.
+race: Race.
+age: Age in years.
+gender: Gender.
+citizen: U.S. citizenship status.
+time_to_work: Travel time to work in minutes.
+lang: Language spoken at home.
+married: Marital status.
+edu: Education level.
+disability: Disability status.
+birth_qrtr: Quarter of the year the person was born (e.g., Jan thru Mar).
+
+
+Let's look at the dimensions of the dataset.
+
+
+```{r}
+
+# Dimensions of the dataframe
+dim(data)
+
+```
+
+
+Let's look at some summary statistics.
+
+
+```{r}
+
+
+# Summary including some basic statistics
+summary(data)
+
+
+```
+
+
+Let's look at the unique values for the categorical variables.
+
+
+```{r}
+
+
+# Initialize an empty list to store the unique values
+unique_values_list = list()
+
+# Iterate through each column of the dataframe
+for(col_name in names(data)) {
+  # Check if the column contains character data
+  if(is.character(data[[col_name]])) {
+    # Store unique values for the column in the list
+    unique_values_list[[col_name]] = unique(data[[col_name]])
+  }
+}
+
+print(unique_values_list)
+
+
+```
+
+
+## Data Cleaning
+
+
+Let's check for missing values.
+
+
+```{r}
+
+
+# Count the missing values in each column
+sapply(data, function(x) sum(is.na(x)))
+
+
+```
+
+
+We must figure out a meaningful way to handle missing data. 
+
+Simply filling in the missing values with mode for categorical variables and median for numerical variables will change the outcome of the analyses in a way the skews the meaning of the data.
+
+for income, missing data for 'unemployed' or 'not in labor force' will be filled with 0, and 'employed' will be filled with median.
+
+for employment, all missing data will be filled with 'not in labor force'.
+
+for hours worked, all missing data where employment is 'not in labor force' or 'unemployed' will be filled with 0, and all missing data where employment is 'employed' will be filled with 40.
+
+time to work will be filled with the median if 'employed', otherwise it will be 0.
+
+for language, all missing data will be filled as 'english'.
+
+for education, all missing data will be filled as 'hs or lower'.
+
+
+```{r}
+
+# Calculate the median income for employed individuals ahead of time
+median_income_employed <- median(data$income[data$employment == 'employed'], na.rm = TRUE)
+
+data <- data %>%
+  # Adjust employment status and income together when both are missing
+  mutate(employment = case_when(
+    is.na(employment) & !is.na(income) & income != 0 ~ 'employed',
+    is.na(employment) & (is.na(income) | income == 0) ~ 'not in labor force',
+    TRUE ~ as.character(employment)
+  ),
+  income = if_else(is.na(employment) & is.na(income), 0, income)) %>%
+  
+  # Then, adjust income imputation based on updated employment status
+  mutate(income = case_when(
+    is.na(income) & (employment %in% c('unemployed', 'not in labor force')) ~ 0,
+    is.na(income) & employment == 'employed' ~ median_income_employed,
+    TRUE ~ income
+  )) %>%
+  
+  # Fill missing hrs_work based on employment status
+  mutate(hrs_work = case_when(
+    is.na(hrs_work) & (employment %in% c('not in labor force', 'unemployed')) ~ 0,
+    is.na(hrs_work) & employment == 'employed' ~ 40,
+    TRUE ~ hrs_work
+  )) %>%
+  
+  # Adjust time_to_work imputation based on employment status
+  mutate(time_to_work = case_when(
+    employment == 'employed' & is.na(time_to_work) ~ median(data$time_to_work[data$employment == 'employed'], na.rm = TRUE),
+    is.na(time_to_work) ~ 0,
+    TRUE ~ time_to_work
+  )) %>%
+  
+  # Fill missing lang with 'english'
+  mutate(lang = if_else(is.na(lang), 'english', lang)) %>%
+  
+  # Fill missing edu with 'hs or lower'
+  mutate(edu = if_else(is.na(edu), 'hs or lower', edu))
+
+# Check the structure and summary to confirm changes
+summary(data)
+
+
+```
+
+
+Let's remove duplicate entries.
+
+
+```{r}
+
+data = unique(data)
+
+```
+
+
+## Data Visualization and Exploratory Data Analysis (EDA)
+
+Let's plot the frequency histograms for the numeric variables.
+
+
+```{r}
+
+
+# Select only the numeric columns identified: income, hrs_work, age, and time_to_work
+numeric_data = data %>%
+  select(income, hrs_work, age, time_to_work)
+
+numeric_data_long = numeric_data %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+p = ggplot(numeric_data_long, aes(x = Value)) +
+  geom_histogram(bins = 15, fill = "#9e9ac8", color = "black") +
+  facet_wrap(~Variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Histogram of Numeric Variables in the ACS Data", x = "", y = "Frequency") +
+  theme(axis.text.x = element_text(size = 12),  # Increase x-axis tick labels size
+        axis.title.x = element_text(size = 18),  # Increase x-axis title size
+        axis.title.y = element_text(size = 16),  # Increase y-axis title size
+        plot.title = element_text(size = 20, hjust = 0.5))  # Increase plot title size and center it
+
+print(p)
+
+
+```
+
+
+Let's plot the bar graphs for the categorical variables.
+
+
+```{r}
+
+
+# Identify categorical variables based on their data type
+categorical_variables = names(select_if(data, is.character))
+
+# Create a function to plot a single categorical variable using a color-blind-friendly palette
+plot_categorical_variable = function(data, variable_name) {
+  # Convert the variable to a factor for better control over the fill aesthetic
+  data[[variable_name]] = as.factor(data[[variable_name]])
+  
+  plot = ggplot(data, aes(x = !!sym(variable_name), fill = !!sym(variable_name))) +
+    geom_bar(color = "black") +  # Outline color
+    scale_fill_brewer(palette = "Set1") +  # Color-blind-friendly palette
+    theme_minimal() +
+    labs(title = paste("Frequency of", variable_name, "in the ACS Data"), x = "", y = "Count") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 14), # Increase axis text size
+          axis.title.x = element_text(size = 18),  # Increase x-axis title size
+          axis.title.y = element_text(size = 16),  # Increase y-axis title size
+          plot.title = element_text(size = 20, hjust = 0.5), # Increase plot title size and center it
+          legend.position = "none")  # Hide legend since it's redundant
+  
+  # Print the plot
+  print(plot)
+}
+
+# Loop through each categorical variable and plot it
+for(variable_name in categorical_variables) {
+  plot_categorical_variable(data, variable_name)
+}
+
+
+```
+
+
+Let's create a correlation matrix for the numeric variables.
+
+
+```{r}
+
+
+# Select only numeric variables for the correlation matrix
+numeric_data = select_if(data, is.numeric)
+
+# Calculate the correlation matrix, handling missing values by excluding them
+cor_matrix = cor(numeric_data)
+
+# Plot the correlation heatmap with increased text sizes
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45, # Text label color and rotation
+         addCoef.col = "black", # Add correlation coefficients to the plot
+         tl.cex = 1.5, # Increase size of text labels (axis labels)
+         number.cex = 1.2) # Increase size of correlation coefficients
+
+```
+
+
+We will convert the categorical variables to factors.
+
+Education is an ordered factor where 'hs or lower' < 'college' < 'grad'.
+
+
+```{r}
+
+
+# Convert categorical variables to factors
+# and specify levels for 'edu' to treat it as an ordinal factor
+data = data %>%
+  mutate(across(where(is.character), as.factor), # Convert all character columns to factors
+         edu = factor(edu, levels = c('hs or lower', 'college', 'grad'), ordered = TRUE)) # Make 'edu' an ordered factor
+
+
+```
+
+
+We will apply Cramer's V to the categorical variables to see correlations as measured on a scale of 0 to 1.
+
+
+```{r}
+
+
+# Re-identify categorical variables now that they are explicitly factors
+categorical_variables = select_if(data, is.factor)
+
+calculate_cramers_v = function(data) {
+  var_names = names(data)
+  results = matrix(NA, nrow = length(var_names), ncol = length(var_names), dimnames = list(var_names, var_names))
+  
+  for(i in seq_along(var_names)) {
+    for(j in seq_along(var_names)) {
+      if(i == j) {
+        results[i, j] = 1
+      } else if (i < j) {
+        # Using CramersV from the confintr package
+        results[i, j] = results[j, i] = cramersv(table(data[[var_names[i]]], data[[var_names[j]]]))
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# Reapply the function on the identified categorical variables
+cramers_v_matrix = calculate_cramers_v(categorical_variables)
+
+# View the results
+print(cramers_v_matrix)
+
+
+```
+
+
+Let's create a heatmap of the correlations from the Cramer's V matrix.
+
+
+```{r}
+
+
+# Convert the matrix to a data frame for plotting with ggplot2
+melted_cramers_v_matrix = melt(cramers_v_matrix)
+
+# Plotting the heatmap with Cramér's V values
+ggplot(melted_cramers_v_matrix, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() + # Use geom_tile() for heatmap representation
+  geom_text(aes(label = sprintf("%.2f", value)), color = "black", size = 3) + # Increase Cramér's V values label size
+  scale_fill_gradient2(low = "#91bfdb", high = "#fc8d59", mid = "white", midpoint = 0.5, 
+                       limits = c(0, 1), space = "Lab", name="Cramér's V") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 16), # Increase x-axis text size
+        axis.text.y = element_text(size = 16), # Increase y-axis text size
+        plot.title = element_text(size = 20, hjust = 0.5), # Increase chart title size
+        legend.title = element_text(size = 16), # Increase legend title size
+        legend.text = element_text(size = 14)) + # Increase legend text size
+  labs(title = "Heatmap of Cramér's V Matrix", x = "Variables", y = "Variables") +
+  coord_fixed()
+
+
+```
+
+
+## Data Standardization
+
+
+Now we will standardize the variables to prepare for modeling using unsupervised machine learning, specifically k-prototype clustering (a version of k-means that handles both numerical and categorical variables).
+
+
+```{r}
+
+
+# Standardize only the numeric columns
+data_standardized = data %>%
+  mutate(across(where(is.numeric), scale)) %>%
+  # Ensure factor variables remain untouched
+  mutate(across(where(is.factor), as.factor))
+
+
+```
+
+
+## Clustering Parameter Evaluation
+
+We will create an elbow plot to visualize the number of clusters vs the total within sum of squares (TWSS).
+
+Look for the "elbow" in the plot where the rate of decrease in TWSS sharply changes. This point suggests adding more clusters doesn't significantly improve the fit.
+
+
+```{r}
+
+set.seed(1) # For reproducibility
+
+# Calculate TWSS for a range of cluster numbers
+twss = numeric(20)
+for (k in 1:20) {
+  set.seed(1)
+  model = kproto(x = data_standardized, k = k)
+  twss[k] = model$tot.withinss
+}
+
+# Plot the TWSS (elbow method) with larger text
+k_values = 1:20
+ggplot(data.frame(k = k_values, TWSS = twss), aes(x = k, y = TWSS)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = k_values) +
+  labs(title = "Elbow Method for Optimal k", x = "Number of Clusters (k)", y = "Total Within Sum of Squares (TWSS)") +
+  theme(text = element_text(size = 16), # Increase general text size
+        plot.title = element_text(size = 20, face = "bold"), # Increase and bold plot title
+        axis.title = element_text(size = 18), # Increase axis title text size
+        axis.text = element_text(size = 14)) # Increase axis text size
+
+
+```
+
+
+## Final Clustering Algorithm
+
+We will use the optimal number of clusters from the plot above to apply to the final clustering algorithm. 
+
+
+```{r}
+
+k_optimal = 8  # Seemingly observed optimal number of clusters
+
+# Fit the k-prototypes model with the optimal number of clusters
+set.seed(1)
+final_model = kproto(x = data_standardized, k = k_optimal)
+
+# Print the clustering result
+print(final_model)
+
+
+```
+
+
+Let's add the cluster labels to a new dataframe.
+
+
+```{r}
+
+# Create a new dataframe
+data_clust = data
+
+# Add the clusters from the final model to them 
+data_clust$cluster = final_model$cluster
+
+# Create separate cluster variable
+clusters = final_model$cluster
+
+```
+
+
+## Data Visualization
+
+Let's visualize clusters for the numeric variables.
+
+
+```{r}
+
+# Identify numeric variables excluding the cluster column
+numeric_vars = names(data_clust)[sapply(data_clust, is.numeric) & names(data_clust) != 'cluster']
+
+# Loop through each numeric variable to create a plot against cluster number
+for (var in numeric_vars) {
+  # Create the plot
+  p = ggplot(data_clust, aes_string(x = 'cluster', y = var, group = 'cluster')) + 
+    geom_boxplot() +  # Boxplot to visualize distribution
+    geom_jitter(width = 0.2, alpha = 0.4, color = "#9e9ac8") +  # Jitter to show individual data points with dusty purple color
+    labs(title = paste("Distribution of", var, "across Clusters"),
+         x = "Cluster Number",
+         y = var) +
+    theme_minimal() +
+    theme(text = element_text(size = 16),  # Increase general text size
+          plot.title = element_text(size = 20, face = "bold"),  # Increase and bold plot title
+          axis.title = element_text(size = 18),  # Increase axis title text size
+          axis.text = element_text(size = 14))  # Increase axis text size
+
+  # Print the plot
+  print(p)
+}
+
+```
+
+
+Let's look at some bar graphs for the categorical variables.
+
+
+```{r}
+
+# Add the clusters to the categorical variables
+categorical_variables$cluster = final_model$cluster
+
+# Loop through each column, except 'cluster'
+for(col_name in names(categorical_variables)[-which(names(categorical_variables) == "cluster")]) {
+  
+  # Generate the plot for the current column
+  p = ggplot(categorical_variables, aes_string(x = "cluster", fill = col_name)) + 
+    geom_bar(position = "dodge") +
+    labs(title = paste("Distribution of", col_name, "Across Clusters"), x = "Cluster", y = "Count") +
+    scale_fill_brewer(palette = "Set1") +  # Use ColorBrewer's Set3 color scheme
+    theme_minimal() +
+    theme(text = element_text(size = 16),  # Increase general text size
+          plot.title = element_text(size = 20, face = "bold"),  # Increase and bold plot title
+          axis.title = element_text(size = 18),  # Increase axis title text size
+          axis.text = element_text(size = 14),  # Increase axis text size
+          legend.title = element_text(size = 14),  # Increase legend title size
+          legend.text = element_text(size = 12))  # Increase legend text size
+
+  # Print the plot
+  print(p)
+}
+
+```
+
+
+## t-SNE Dimensionality Reduction
+
+
+Let's prepare data for t-SNE dimensionality reduction.
+
+We need to remove any duplicates of numeric data from dataset or else an error will be returned.
+
+
+```{r}
+
+# Create the numeric variable with the standardized data
+data_numeric = data_standardized[, sapply(data_standardized, is.numeric)]
+
+# Add the clusters
+data_numeric$cluster = final_model$cluster 
+
+# Remove any duplicate entries so t-SNE will work properly
+data_numeric_unique = unique(data_numeric)
+
+
+```
+
+
+Now we can run t-SNE on the numerical data.
+
+
+```{r}
+
+# Run t-SNE on the numeric data
+set.seed(1) # For reproducibility
+tsne_results = Rtsne(data_numeric_unique, dims = 2, perplexity = 30, verbose = TRUE)
+
+# Combine the t-SNE dimensions with the cluster assignments
+tsne_data = data.frame(X = tsne_results$Y[,1], Y = tsne_results$Y[,2], Cluster = data_numeric_unique$cluster)
+
+```
+
+
+Let's visualize the clusters on a t-SNE plot with applied dimensionality reduction.
+
+
+```{r}
+
+# Convert cluster to a factor so that the color scale works properly
+tsne_data$Cluster = factor(tsne_data$Cluster)
+
+# Now, use ggplot with scale_color_manual
+ggplot(tsne_data, aes(x = X, y = Y, color = Cluster)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = rainbow(length(levels(tsne_data$Cluster)))) +
+  labs(title = "t-SNE Visualization with Adjusted Clusters",
+       x = "t-SNE Dimension 1", y = "t-SNE Dimension 2", color = "Cluster") +
+  theme_minimal() +
+  theme(text = element_text(size = 16),  # General text size increase
+        plot.title = element_text(size = 20, face = "bold"),  # Increase plot title size and make it bold
+        axis.title = element_text(size = 18),  # Increase axis title text size
+        axis.text = element_text(size = 14),  # Increase axis text size
+        legend.title = element_text(size = 14),  # Increase legend title size
+        legend.text = element_text(size = 12))  # Increase legend text size
+```
+
+
+
